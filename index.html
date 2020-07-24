@@ -1,0 +1,640 @@
+<html>
+  <head>
+    <style>
+      canvas {
+        width: 720px;
+        height: 480px;
+        background: #000000; /* fallback for old browsers */
+        background: -webkit-linear-gradient(to right, #000000, rgb(67, 73, 80));
+        background: linear-gradient(to right, #000000, rgb(67, 73, 80)); 
+      }
+    </style>
+  </head>
+  <body>
+    <canvas width="720" height="480" id="main"></canvas>
+  </body>
+  <script>
+  var canvas = document.querySelector('#main')
+  var ctx = canvas.getContext('2d')
+  var width = 720
+  var height = 480
+  var screenBounds = {
+    x1: 0, x2: width,
+    y1: 0, y2: height
+  }
+  var events = {
+    'ArrowLeft': false,
+    'ArrowRight': false,
+    'ArrowUp': false,
+    'ArrowDown': false
+  }
+  var soundtrack = new Audio('space_song.mp3')
+  var databaseImage = new Image()
+  var leafImage = new Image()
+  var ship
+  var stars
+  var camera
+  var meteors
+  var hasFired
+  var isShaking
+  var frame
+  var gameplay
+
+  leafImage.src = 'gem.png'
+  databaseImage.src = 'meteor.png'
+  leafImage.onload = function () {
+    main()
+  }
+
+  soundtrack.play()
+  soundtrack.addEventListener('ended', function() {
+    this.currentTime = 0
+    this.play()
+  }, false)
+
+  ctx.strokeStyle = '#fff'
+  ctx.imageSmoothingEnabled = false
+
+  function Camera (opts) {
+    this.pos = {
+      x: opts.position.x,
+      y: opts.position.y
+    }
+
+    this.direction = 1
+    this.offset = 0
+  }
+
+  Camera.prototype.shake = function () {
+    var speed = 7
+    var max = 25
+
+    if (this.offset >= max) this.direction = -1
+    else if (this.offset <= 0) this.direction = 1
+    this.offset += this.direction * speed
+    this.pos.x += this.direction * speed
+  }
+
+  function Entity (opts) {
+    this.pos = {
+      x: opts.position.x,
+      y: opts.position.y
+    }
+
+    this.origin = {
+      x: this.pos.x + opts.width / 2,
+      y: this.pos.y + opts.height / 2
+    }
+
+    this.angle = 0
+    this.width = opts.width
+    this.height = opts.height
+    this.img = opts.image || undefined
+    this.opacity = opts.opacity || undefined
+    this.speed = opts.speed === undefined ? 1 : opts.speed
+    this.glow = opts.glow
+    this.glowRadius = opts.glowRadius
+
+    this.dir = {
+      x: opts.direction.x,
+      y: opts.direction.y
+    }
+  }
+
+  Entity.prototype.getBounds = function () {
+    return {
+      x1: this.origin.x - (this.width / 2),
+      x2: this.origin.x + (this.width / 2),
+      y1: this.origin.y - (this.height / 2),
+      y2: this.origin.y + (this.height / 2)
+    }
+  }
+
+  Entity.prototype.translate = function (x, y) {
+    this.pos.x += x
+    this.pos.y += y
+  }
+
+  Entity.prototype.rotateForwardVector = function (a) {
+    var c = Math.cos(a)
+    var s = Math.sin(a)
+
+    var x = c * this.dir.x - s * this.dir.y
+    var y = c * this.dir.y + s * this.dir.x
+
+    this.dir.x = x
+    this.dir.y = y
+  }
+
+  Entity.prototype.rotateImage = function (a) {
+    this.angle += a
+  }
+
+  Entity.prototype.moveForward = function () {
+    var x = this.dir.x * this.speed
+    var y = this.dir.y * this.speed
+
+    this.pos.x += x
+    this.pos.y += y
+    this.origin.x += x
+    this.origin.y += y
+  }
+
+  Entity.prototype.render = function (fn) {
+    var w = this.width / 2
+    var h = this.height / 2
+    var x = this.pos.x - camera.pos.x + (width / 2)
+    var y = this.pos.y - camera.pos.y + (height / 2)
+
+    ctx.save()
+    ctx.translate(x + w, y + h)
+    ctx.rotate(this.angle)
+    ctx.globalAlpha = this.opacity !== undefined ? this.opacity : 1.0
+
+    if (this.glow) {
+      ctx.fillStyle = '#fff'
+      ctx.shadowColor = this.glow
+      ctx.shadowBlur = this.glowRadius
+      ctx.beginPath()
+      ctx.arc(0, 0, 1, 0, 2 * Math.PI)
+      ctx.fill()
+    }
+
+    if (fn) fn(-w, -h, this.width, this.height)
+    else if (this.img) ctx.drawImage(this.img, -w, -h, this.width, this.height)
+    else ctx.strokeRect(-w, -h, this.width, this.height)
+
+    ctx.globalAlpha = 1.0
+    ctx.restore()
+  }
+
+  function Ship (opts) {
+    this.width = 22
+    this.height = 22
+
+    this.body = new Entity({
+      position: {
+        x: (width / 2) - (this.width / 2),
+        y: (height / 2) - (this.height / 2)
+      },
+      direction: {
+        x: 0,
+        y: -1
+      },
+      width: this.width,
+      height: this.height,
+      speed: 0.2
+    })
+
+    this.isAccelerating = false
+    this.hasExploded = false
+    this.explosion = new Emitter({})
+    this.weapon = []
+    this.velocity = {
+      x: 0, y: -0.5
+    }
+
+    var w = this.width
+    var h = this.height
+
+    this.shipLeft = [
+      w/2, 0,
+      w/2, h,
+      w*0.25, h*0.75
+    ]
+    this.shipRight = [
+      w/2, 0,
+      w/2, h,
+      w*0.75, h*0.75
+    ]
+    this.shipFlame = [
+      w/2, h+2,
+      w/2+3, h+6,
+      w/2, h+26,
+      w/2-3, h+6
+    ]
+  }
+
+  Ship.prototype.explode = function () {
+    if (this.hasExploded === true) return
+    this.explosion.emit({
+      position: { x: this.body.origin.x, y: this.body.origin.y }
+    })
+    this.velocity.x /= 8
+    this.velocity.y /= 8
+    this.hasExploded = true
+  }
+
+  Ship.prototype.fire = function () {
+    this.weapon.push(new Entity({
+      position: { x: this.body.origin.x, y: this.body.origin.y },
+      direction: { x: this.body.dir.x, y: this.body.dir.y },
+      image: undefined,
+      width: 4,
+      height: 4,
+      speed: 10
+    }))
+  }
+
+  Ship.prototype.accelerate = function () {
+    var x = this.body.dir.x * this.body.speed
+    var y = this.body.dir.y * this.body.speed
+
+    this.velocity.x += x
+    this.velocity.y += y
+
+    this.shipFlame[5] = Math.random() * 30 + 45
+    this.isAccelerating = true
+  }
+
+  Ship.prototype.rotate = function (a) {
+    this.body.rotateForwardVector(a)
+    this.body.rotateImage(a)
+  }
+
+  Ship.prototype.update = function () {
+    var self = this
+    self.body.pos.x += self.velocity.x
+    self.body.pos.y += self.velocity.y
+    self.body.origin.x += self.velocity.x
+    self.body.origin.y += self.velocity.y
+    self.weapon.forEach(function (laser, i) {
+      laser.pos.x += self.velocity.x
+      laser.pos.y += self.velocity.y
+      laser.moveForward()
+    })
+  }
+
+  Ship.prototype.render = function () {
+    var self = this
+    if (this.hasExploded) {
+      this.explosion.render(function (x, y, w, h) {
+        ctx.fillStyle = 'orange'
+        ctx.beginPath()
+        ctx.arc(x + (w/2), y + (w/2), w / 5, 0, 2 * Math.PI)
+        ctx.fill()
+      })
+      return
+    }
+    self.body.render(function (x, y, w, h) {
+      fillPolygon(self.shipLeft, x, y, '#fff')
+      fillPolygon(self.shipRight, x, y, '#aaa')
+      if (self.isAccelerating) {
+        fillPolygon(self.shipFlame, x, y, 'orange')
+      }
+    })
+    self.weapon.forEach(function (laser, i) {
+      if (isInsideBounds(laser.pos, screenBounds)) laser.render(function (x, y, w, h) {
+        ctx.fillStyle = '#67c8ff'
+        ctx.shadowColor = '#ffffff'
+        ctx.shadowBlur = 5
+        ctx.beginPath()
+        ctx.arc(x, y, w/2, 0, 2 * Math.PI)
+        ctx.fill()
+        ctx.closePath()
+      })
+      else self.weapon.splice(i, 1)
+    })
+  }
+
+  function Starfield(config) {
+    this.width = config.width
+    this.height = config.height
+    this.count = config.count
+    this.stars = []
+    this.camera = config.camera || undefined
+
+    for (var i = 0, l = this.count; i < l; i++) {
+      var x = Math.random() * (this.width - 2) + 2
+      var y = Math.random() * (this.height - 2) + 2
+      var f = Math.random()
+      var r = f
+      var d = f / 4
+
+      this.stars.push({
+        x: x,
+        y: y,
+        radius: r,
+        distance: d,
+        fill: "#fff"
+      })
+    }
+  }
+
+  Starfield.prototype.render = function() {
+    var w = this.width + 10
+    var h = this.height + 10
+
+    for (var i = 0, l = this.count; i < l; i++) {
+      var star = this.stars[i]
+      var r = star.radius
+      var x = star.x - (camera.pos.x + (width / 2)) * star.distance
+      var y = star.y - (camera.pos.y + (height / 2)) * star.distance
+
+      star.x += (x < 0 ? w : x > w ? -w : 0)
+      star.y += (y < 0 ? h : y > h ? -h : 0)
+
+      ctx.fillStyle = star.fill
+      ctx.beginPath()
+      ctx.arc(x, y, star.radius, 0, 2 * Math.PI)
+      ctx.fill()
+    }
+  }
+
+  function Emitter (opts) {
+    this.particles = []
+    this.image = opts.image
+  }
+
+  Emitter.prototype.emit = function (opts) {
+    var max = Math.random() * 4 + 3;
+    for (var i = 0; i < max; i++) {
+      var size = Math.random() * 80 + 20
+      this.particles.push(new Entity({
+        direction: {
+          x: Math.random() * 2 - 1,
+          y: Math.random() * 2 - 1
+        },
+        position: {
+          x: opts.position.x - (size / 2),
+          y: opts.position.y - (size / 2)
+        },
+        width: size,
+        height: size,
+        opacity: 1.0,
+        image: this.image
+      }))
+    }
+  }
+
+  Emitter.prototype.render = function (fn) {
+    for (var i = 0; i < this.particles.length; i++) {
+      var p = this.particles[i]
+      p.opacity -= 0.05
+      if (p.opacity <= 0.0) {
+        this.particles = []
+        return
+      }
+      p.moveForward()
+      p.render(fn)
+    }
+  }
+
+  function Meteor (opts) {
+    this.body = new Entity({
+      position: {
+        x: opts.position.x,
+        y: opts.position.y
+      },
+      direction: {
+        x: opts.direction.x,
+        y: opts.direction.y
+      },
+      image: databaseImage,
+      glow: '#fff',
+      glowRadius: 50,
+      width: 60,
+      height: 60
+    })
+    this.leaf = new Entity({
+      position: {
+        x: opts.position.y,
+        y: opts.position.y
+      },
+      direction: {
+        x: opts.direction.x,
+        y: opts.direction.y
+      },
+      image: leafImage,
+      glow: 'white',
+      glowRadius: 25,
+      width: 40,
+      height: 40
+    })
+    this.explosion = new Emitter({})
+    this.sparkles = new Emitter({})
+    this.hasExploded = false
+    this.leafShowing = false
+  }
+
+  Meteor.prototype.showLeaf = function () {
+    this.leafShowing = true
+    this.body.width = 0
+    this.body.height = 0
+    this.leaf.pos.x = this.body.origin.x - 20
+    this.leaf.pos.y = this.body.origin.y - 20
+    this.leaf.origin.x = this.body.origin.x
+    this.leaf.origin.y = this.body.origin.y
+  }
+
+  Meteor.prototype.collectLeaf = function () {
+    if (this.leafShowing === false) return
+    this.leafShowing = false
+    this.sparkles.emit({
+      position: { x: this.body.origin.x, y: this.body.origin.y }
+    })
+  }
+
+  Meteor.prototype.explode = function () {
+    if (this.hasExploded === true) return
+    this.explosion.emit({
+      position: { x: this.body.origin.x, y: this.body.origin.y }
+    })
+    setTimeout((function () {
+      this.hasExploded = true
+      this.showLeaf()
+    }).bind(this), 200)
+  }
+
+  Meteor.prototype.render = function () {
+    this.body.rotateImage(0.0174)
+    this.body.moveForward()
+    if (this.hasExploded === false) this.body.render()
+    else if (this.leafShowing) this.leaf.render()
+    this.explosion.render(function (x, y, w, h) {
+      ctx.fillStyle = '#fff'
+      ctx.beginPath()
+      ctx.arc(x + (w/2), y + (w/2), w / 2, 0, 2 * Math.PI)
+      ctx.fill()
+    })
+    this.sparkles.render(function (x, y, w, h) {
+      ctx.fillStyle = 'rgba(127,200,87,0.4)'
+      ctx.beginPath()
+      ctx.arc(x + (w/2), y + (w/2), w / 15, 0, 2 * Math.PI)
+      ctx.fill()
+    })
+  }
+
+  window.addEventListener('keydown', function (e) {
+    if (events[e.key] !== undefined)
+      events[e.key] = true
+  })
+
+  window.addEventListener('keyup', function (e) {
+    if (events[e.key] !== undefined)
+      events[e.key] = false
+  })
+
+  window.addEventListener('keypress', function (e) {
+    if (e.key === 'Enter') {
+      hasFired = true
+    } else if (e.key === 'r') {
+      window.cancelAnimationFrame(frame)
+      clearInterval(gameplay)
+      main()
+    }
+  })
+
+  function shakeCamera () {
+    isShaking = true
+    setTimeout(function () {
+      isShaking = false
+    }, 200)
+  }
+
+  function fillPolygon (points, ox, oy, color) {
+    ctx.fillStyle = color
+    ctx.beginPath()
+    ctx.moveTo(ox + points[0], oy + points[1])
+    for (var i = 2; i < points.length - 1; i += 2) {
+      ctx.lineTo(ox + points[i], oy + points[i + 1])
+    }
+    ctx.closePath()
+    ctx.fill()
+  }
+
+  function isInsideBounds (pos, bounds) {
+    var x = pos.x - camera.pos.x + (width / 2)
+    var y = pos.y - camera.pos.y + (height / 2)
+
+    return x >= bounds.x1 && x <= bounds.x2 &&
+      y >= bounds.y1 && y <= bounds.y2
+  }
+
+  function boxesIntersect (a, b) {
+    if (a.x2 < b.x1) return false
+    if (a.x1 > b.x2) return false
+    if (a.y2 < b.y1) return false
+    if (a.y1 > b.y2) return false
+    return true
+  }
+
+  function checkCollisions () {
+    meteors.forEach(function (meteor) {
+      if (meteor.hasExploded === false && !ship.hasExploded) {
+        if (boxesIntersect(ship.body.getBounds(), meteor.body.getBounds())) {
+          ship.explode()
+          shakeCamera()
+          return
+        }
+      }
+      if (boxesIntersect(ship.body.getBounds(), meteor.leaf.getBounds())) {
+        meteor.collectLeaf()
+      }
+    })
+
+    ship.weapon.forEach(function (laser, l) {
+      meteors.forEach(function (meteor, m) {
+        if (boxesIntersect(laser.getBounds(), meteor.body.getBounds())) {
+          meteor.explode()
+          ship.weapon.splice(l, 1)
+          shakeCamera()
+        }
+      })
+    })
+  }
+
+  function loop () {
+    ctx.clearRect(0, 0, width, height)
+
+    if (!ship.hasExploded) {
+      if (events.ArrowRight) ship.rotate(0.0174 * 7)
+      if (events.ArrowLeft) ship.rotate(-0.0174 * 7)
+      if (hasFired) {
+        ship.fire()
+        hasFired = false
+      }
+      if (events.ArrowUp) ship.accelerate()
+      else ship.isAccelerating = false
+    }
+
+    ship.update()
+
+    camera.pos.x = ship.body.origin.x
+    camera.pos.y = ship.body.origin.y - 50
+
+    if (isShaking)
+      camera.shake()
+
+    checkCollisions()
+
+    stars.render()
+    meteors.forEach(function (meteor) {
+      meteor.render()
+    })
+    ship.render()
+
+    frame = window.requestAnimationFrame(loop)
+  }
+
+  function main () {
+    ship = new Ship()
+    stars = new Starfield({
+      width: width,
+      height: height,
+      count: 100
+    })
+
+    camera = new Camera({
+      position: { x: ship.body.origin.x, y: ship.body.origin.y - 50 },
+      direction: { x: ship.body.dir.x, y: ship.body.dir.y },
+      speed: ship.body.speed
+    })
+
+    meteors = [new Meteor({
+      position: {
+        x: 0,
+        y: 0
+      },
+      direction: {
+        x: 0,
+        y: 0
+      },
+    })]
+
+    hasFired = false
+    isShaking = false
+
+    gameplay = setInterval(function () {
+      var xabs = Math.abs(ship.velocity.x)
+      var yabs = Math.abs(ship.velocity.y)
+
+      if (xabs > 3 || yabs > 3) {
+        var h = width / 2 + 70
+        var v = height / 2 + 70
+        var x = 0
+        var y = 0
+        if (xabs > yabs) {
+          x = h * (ship.velocity.x < 0 ? -1 : 1)
+          y = Math.random() * v - (v / 2)
+        } else {
+          y = v * (ship.velocity.y < 0 ? -1 : 1)
+          x = Math.random() * h - (h / 2)
+        }
+        meteors.push(new Meteor({
+          position: {
+            x: ship.body.origin.x + x,
+            y: ship.body.origin.y - 50 + y
+          },
+          direction: {
+            x: 0,
+            y: 0
+          },
+        }))
+      }
+    }, 2000)
+
+    loop()
+  }
+  </script>
+</html>
